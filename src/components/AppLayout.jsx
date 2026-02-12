@@ -27,7 +27,12 @@ export default function AppLayout() {
   const { user, logout } = useAuth();
 
   const name = user?.user?.fullName || user?.fullName || "User";
-  const roles = (user?.user?.roles || user?.roles || []).join(", ");
+
+  const roles = user?.user?.roles || user?.roles || [];
+  const rolesText = roles.join(", ");
+
+  const canSeeAdmin =
+    roles.includes("ADMIN") || roles.includes("CHAIR") || roles.includes("TPC");
 
   return (
     <div style={{ fontFamily: "sans-serif", minHeight: "100vh" }}>
@@ -68,7 +73,7 @@ export default function AppLayout() {
           <NavItem to="/conferences" label="Conferences" />
           <NavItem to="/submit" label="Submit Paper" />
           <NavItem to="/my-submissions" label="My Submissions" />
-          <NavItem to="/admin" label="Admin" />
+          {canSeeAdmin && <NavItem to="/admin" label="Admin" />}
         </div>
 
         {/* Main */}
