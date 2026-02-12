@@ -24,7 +24,14 @@ export default function Admin() {
 
   // Roles
   const canAdmin = useMemo(() => {
-    const roles = user?.roles || [];
+    const rolesRaw = user?.roles ?? [];
+    const roles = Array.isArray(rolesRaw)
+      ? rolesRaw
+      : String(rolesRaw)
+          .split(",")
+          .map((r) => r.trim())
+          .filter(Boolean);
+
     return roles.includes("ADMIN") || roles.includes("CHAIR");
   }, [user]);
 
@@ -67,10 +74,9 @@ export default function Admin() {
     setMsg("");
     try {
       const data = await apiFetch(
-        `/admin/submissions?conferenceId=${encodeURIComponent(
-          selectedConferenceId,
-        )}`,
-        { token },
+  `/admin/submissions/by-conference/${encodeURIComponent(selectedConferenceId)}`,
+  { token }
+);
       );
       setSubmissions(Array.isArray(data) ? data : data.items || []);
     } catch (e) {
