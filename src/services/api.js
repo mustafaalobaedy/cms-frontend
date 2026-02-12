@@ -1,21 +1,48 @@
-const API_BASE = import.meta.env.VITE_API_BASE_URL;
+// src/services/api.js
+const API_BASE =
+  import.meta.env.VITE_API_BASE_URL || "https://api.cms.icaici.com";
 
-export async function apiRequest(path, options = {}) {
-  const token = localStorage.getItem("token");
+export function getToken() {
+  return localStorage.getItem("token");
+}
+
+export async function apiFetch(path, options = {}) {
+  const token = getToken();
+
+  const headers = {
+    ...(options.headers || {}),
+  };
+
+  // If sending JSON, set content-type (but don't force it for FormData)
+  const isFormData = options.body instanceof FormData;
+  if (!isFormData && !headers["Content-Type"]) {
+    headers["Content-Type"] = "application/json";
+  }
+
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
 
   const res = await fetch(`${API_BASE}${path}`, {
     ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(options.headers || {}),
-    },
+    headers,
   });
 
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || "Request failed");
+  // Try parse JSON if possible
+  const text = await res.text();
+  let data = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = text;
   }
 
-  return res.json();
+  if (!res.ok) {
+    const message =
+      (data && data.error) ||
+      (typeof data === "string" ? data : "Request failed");
+    throw new Error(message);
+  }
+
+  return data;
 }
