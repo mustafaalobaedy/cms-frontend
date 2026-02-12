@@ -74,10 +74,10 @@ export default function Admin() {
     setMsg("");
     try {
       const data = await apiFetch(
-  `/admin/submissions/by-conference/${encodeURIComponent(selectedConferenceId)}`,
-  { token }
-);
+        `/admin/submissions/by-conference/${encodeURIComponent(selectedConferenceId)}`,
+        { token },
       );
+
       setSubmissions(Array.isArray(data) ? data : data.items || []);
     } catch (e) {
       setErr(e?.message || "Failed to load submissions");
