@@ -1,397 +1,342 @@
+// src/pages/Admin.jsx
 import React, { useEffect, useMemo, useState } from "react";
 import { apiFetch } from "../services/api";
-import { useAuth } from "../routes/AuthContext";
-
-// Decisions allowed by backend
-const DECISIONS = ["ACCEPTED", "REJECTED", "REVISION_REQUESTED"];
 
 export default function Admin() {
-  const { user, token } = useAuth();
+  const [me, setMe] = useState(null);
 
-  const [conferences, setConferences] = useState([]);
-  const [selectedConferenceId, setSelectedConferenceId] = useState("");
+  const [confs, setConfs] = useState([]);
+  const [confId, setConfId] = useState("");
 
-  const [submissions, setSubmissions] = useState([]);
-  const [loading, setLoading] = useState(false);
+  const [subs, setSubs] = useState([]);
 
-  // UI state for actions
-  const [reviewerEmails, setReviewerEmails] = useState("");
-  const [decisionValue, setDecisionValue] = useState("ACCEPTED");
+  // Create user
+  const [uEmail, setUEmail] = useState("");
+  const [uName, setUName] = useState("");
+  const [uPass, setUPass] = useState("");
+  const [uRole, setURole] = useState("REVIEWER");
+
+  // Actions panel
+  const [selectedSubId, setSelectedSubId] = useState("");
+  const [reviewerEmails, setReviewerEmails] = useState(
+    "reviewer1@email.com, reviewer2@email.com",
+  );
+  const [decision, setDecisionValue] = useState("ACCEPTED");
   const [decisionNote, setDecisionNote] = useState("");
 
-  const [err, setErr] = useState("");
   const [msg, setMsg] = useState("");
+  const [err, setErr] = useState("");
 
-  // Roles
-  const canAdmin = useMemo(() => {
-    const rolesRaw = user?.roles ?? [];
-    const roles = Array.isArray(rolesRaw)
-      ? rolesRaw
-      : String(rolesRaw)
+  const roles = useMemo(() => {
+    const r = me?.roles || [];
+    return Array.isArray(r)
+      ? r
+      : String(r)
           .split(",")
-          .map((r) => r.trim())
-          .filter(Boolean);
+          .map((x) => x.trim());
+  }, [me]);
 
-    return roles.includes("ADMIN") || roles.includes("CHAIR");
-  }, [user]);
+  const canAdmin =
+    roles.includes("ADMIN") || roles.includes("CHAIR") || roles.includes("TPC");
 
-  // Load conferences on page open
   useEffect(() => {
-    let mounted = true;
-
-    async function loadConferences() {
-      setErr("");
-      setMsg("");
+    (async () => {
       try {
-        const data = await apiFetch("/conferences", { token });
-        if (!mounted) return;
-        setConferences(Array.isArray(data) ? data : data.items || []);
-        // auto-select first
-        const firstId =
-          (Array.isArray(data) ? data[0]?._id : data.items?.[0]?._id) || "";
-        setSelectedConferenceId((prev) => prev || firstId);
+        const _me = await apiFetch("/me");
+        setMe(_me);
+
+        const list = await apiFetch("/conferences"); // your existing working endpoint
+        setConfs(list || []);
+
+        if ((list || []).length > 0) setConfId(list[0]._id || list[0].id || "");
       } catch (e) {
-        setErr(e?.message || "Failed to load conferences");
+        setErr(e.message || "Failed to load admin page");
       }
-    }
+    })();
+  }, []);
 
-    loadConferences();
-    return () => {
-      mounted = false;
-    };
-  }, [token]);
-
-  // Load submissions when conference changes
-  useEffect(() => {
-    if (!selectedConferenceId) return;
-    refreshSubmissions();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedConferenceId]);
-
-  async function refreshSubmissions() {
-    setLoading(true);
+  async function loadSubmissions() {
     setErr("");
     setMsg("");
-    try {
-      const data = await apiFetch(
-        `/admin/submissions/by-conference/${encodeURIComponent(selectedConferenceId)}`,
-        { token },
-      );
+    if (!confId) return setErr("Please select a conference");
 
-      setSubmissions(Array.isArray(data) ? data : data.items || []);
+    try {
+      // ✅ Correct endpoint (matches live)
+      const data = await apiFetch(`/admin/submissions/by-conference/${confId}`);
+      setSubs(Array.isArray(data) ? data : data?.items || []);
+      setMsg("Submissions loaded");
     } catch (e) {
-      setErr(e?.message || "Failed to load submissions");
-    } finally {
-      setLoading(false);
+      setErr(e.message || "Failed to load submissions");
     }
   }
 
-  // -------- Actions --------
+  async function createUser() {
+    setErr("");
+    setMsg("");
+
+    if (!uEmail || !uName || !uPass)
+      return setErr("Email, Full Name, Password are required");
+
+    try {
+      const created = await apiFetch("/admin/users", {
+        method: "POST",
+        body: {
+          email: uEmail.trim(),
+          fullName: uName.trim(),
+          password: uPass,
+          role: uRole,
+        },
+      });
+
+      setMsg(`User created: ${created?.email || uEmail}`);
+      setUEmail("");
+      setUName("");
+      setUPass("");
+    } catch (e) {
+      setErr(e.message || "Failed to create user");
+    }
+  }
 
   async function assignReviewers(subId) {
     setErr("");
     setMsg("");
-
-    if (!canAdmin) return setErr("Only ADMIN/CHAIR can assign reviewers");
+    if (!canAdmin) return setErr("Only ADMIN/CHAIR/TPC can assign reviewers");
 
     const emails = reviewerEmails
       .split(",")
-      .map((s) => s.trim())
+      .map((x) => x.trim())
       .filter(Boolean);
 
-    if (emails.length === 0) {
-      return setErr("Please enter at least 1 reviewer email");
-    }
+    if (emails.length === 0) return setErr("Enter at least one reviewer email");
 
     try {
       await apiFetch(`/admin/submissions/${subId}/assign-reviewers`, {
         method: "POST",
-        token,
         body: { reviewerEmails: emails },
       });
-      setMsg("Reviewers assigned. Status should be UNDER_REVIEW.");
-      await refreshSubmissions();
+
+      setMsg("Reviewers assigned (status should become UNDER_REVIEW)");
+      await loadSubmissions();
     } catch (e) {
-      setErr(e?.message || "Assign reviewers failed");
+      setErr(e.message || "Failed to assign reviewers");
     }
   }
 
-  async function applyDecision(subId) {
+  async function submitDecision(subId, decisionValue) {
     setErr("");
     setMsg("");
-
-    if (!canAdmin) return setErr("Only ADMIN/CHAIR can set decision");
-
-    if (!DECISIONS.includes(decisionValue)) {
-      return setErr("Invalid decision value");
-    }
+    if (!canAdmin) return setErr("Only ADMIN/CHAIR/TPC can set decision");
 
     try {
       await apiFetch(`/admin/submissions/${subId}/decision`, {
-        method: "PATCH",
-        token,
-        body: { decision: decisionValue, decisionNote },
-      });
-      setMsg(`Decision saved: ${decisionValue}`);
-      await refreshSubmissions();
-    } catch (e) {
-      setErr(e?.message || "Set decision failed");
-    }
-  }
-
-  // Download with Authorization header
-  async function downloadPaper(subId, fallbackName = "paper.pdf") {
-    setErr("");
-    setMsg("");
-
-    try {
-      const base = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
-      const url = `${base}/submissions/${subId}/download`;
-
-      const res = await fetch(url, {
-        method: "GET",
-        headers: {
-          Authorization: `Bearer ${token}`,
+        method: "POST",
+        body: {
+          decision: decisionValue,
+          note: decisionNote || "",
         },
       });
 
-      if (!res.ok) {
-        const text = await res.text().catch(() => "");
-        throw new Error(text || `Download failed (${res.status})`);
-      }
-
-      const blob = await res.blob();
-      const objectUrl = URL.createObjectURL(blob);
-
-      const a = document.createElement("a");
-      a.href = objectUrl;
-      a.download = fallbackName;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-
-      URL.revokeObjectURL(objectUrl);
-      setMsg("Download started");
+      setMsg(`Decision set: ${decisionValue}`);
+      await loadSubmissions();
     } catch (e) {
-      setErr(e?.message || "Download failed");
+      setErr(e.message || "Failed to set decision");
     }
   }
 
-  // -------- UI --------
-
   return (
-    <div style={{ padding: 16, maxWidth: 1100 }}>
+    <div style={{ maxWidth: 980 }}>
       <h2>Admin</h2>
 
       <div style={{ marginBottom: 12 }}>
-        <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
-          <label>
-            Conference:&nbsp;
-            <select
-              value={selectedConferenceId}
-              onChange={(e) => setSelectedConferenceId(e.target.value)}
-            >
-              {conferences.map((c) => (
-                <option key={c._id} value={c._id}>
-                  {c.name || c.title || c.shortName || c._id}
-                </option>
-              ))}
-            </select>
-          </label>
+        <div>
+          Conference:{" "}
+          <select value={confId} onChange={(e) => setConfId(e.target.value)}>
+            {confs.map((c) => (
+              <option key={c._id || c.id} value={c._id || c.id}>
+                {c.shortName ? `${c.shortName} — ${c.name}` : c.name}
+              </option>
+            ))}
+          </select>{" "}
+          <button onClick={loadSubmissions}>Refresh</button>
+        </div>
 
-          <button onClick={refreshSubmissions} disabled={loading}>
-            {loading ? "Loading..." : "Refresh"}
-          </button>
+        {!canAdmin && (
+          <div style={{ marginTop: 8, padding: 8, border: "1px solid #ddd" }}>
+            You are logged in, but your role is not ADMIN/CHAIR/TPC. You can
+            view only.
+          </div>
+        )}
+
+        {err && (
+          <div style={{ color: "crimson", marginTop: 8 }}>Error: {err}</div>
+        )}
+        {msg && <div style={{ color: "green", marginTop: 8 }}>{msg}</div>}
+      </div>
+
+      <hr />
+
+      <h3>Create User (ADMIN)</h3>
+      <div style={{ border: "1px solid #ddd", padding: 12, borderRadius: 8 }}>
+        <div>
+          Email
+          <br />
+          <input
+            value={uEmail}
+            onChange={(e) => setUEmail(e.target.value)}
+            style={{ width: "100%" }}
+          />
+        </div>
+        <div style={{ marginTop: 8 }}>
+          Full Name
+          <br />
+          <input
+            value={uName}
+            onChange={(e) => setUName(e.target.value)}
+            style={{ width: "100%" }}
+          />
+        </div>
+        <div style={{ marginTop: 8 }}>
+          Password
+          <br />
+          <input
+            value={uPass}
+            onChange={(e) => setUPass(e.target.value)}
+            style={{ width: "100%" }}
+          />
+        </div>
+        <div style={{ marginTop: 8 }}>
+          Role
+          <br />
+          <select
+            value={uRole}
+            onChange={(e) => setURole(e.target.value)}
+            style={{ width: "100%" }}
+          >
+            <option value="REVIEWER">REVIEWER</option>
+            <option value="TPC">TPC</option>
+            <option value="CHAIR">CHAIR</option>
+            <option value="ADMIN">ADMIN</option>
+            <option value="AUTHOR">AUTHOR</option>
+          </select>
+        </div>
+        <div style={{ marginTop: 10 }}>
+          <button onClick={createUser}>Create User</button>
         </div>
       </div>
 
-      {!canAdmin && (
-        <div
-          style={{ padding: 10, border: "1px solid #ccc", marginBottom: 12 }}
-        >
-          You are logged in, but your role is not ADMIN/CHAIR. You can view
-          only.
-        </div>
-      )}
+      <hr />
 
-      {err && (
-        <div style={{ color: "crimson", marginBottom: 8 }}>
-          <b>Error:</b> {err}
-        </div>
-      )}
-      {msg && (
-        <div style={{ color: "green", marginBottom: 8 }}>
-          <b>OK:</b> {msg}
-        </div>
-      )}
+      <h3>Submissions by Conference (TPC/CHAIR/ADMIN)</h3>
 
-      <div style={{ display: "grid", gap: 10 }}>
-        <div style={{ border: "1px solid #ddd", padding: 12 }}>
-          <h3 style={{ marginTop: 0 }}>Actions Panel</h3>
-
-          <div style={{ display: "grid", gap: 10, maxWidth: 700 }}>
-            <div>
-              <label>
-                Reviewer emails (comma-separated):&nbsp;
-                <input
-                  style={{ width: "100%" }}
-                  value={reviewerEmails}
-                  onChange={(e) => setReviewerEmails(e.target.value)}
-                  placeholder="reviewer1@email.com, reviewer2@email.com"
-                />
-              </label>
-            </div>
-
-            <div>
-              <label>
-                Decision:&nbsp;
-                <select
-                  value={decisionValue}
-                  onChange={(e) => setDecisionValue(e.target.value)}
-                >
-                  {DECISIONS.map((d) => (
-                    <option key={d} value={d}>
-                      {d}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            </div>
-
-            <div>
-              <label>
-                Decision note (optional):&nbsp;
-                <textarea
-                  style={{ width: "100%", minHeight: 70 }}
-                  value={decisionNote}
-                  onChange={(e) => setDecisionNote(e.target.value)}
-                  placeholder="Short note for authors..."
-                />
-              </label>
-            </div>
-          </div>
-
-          <p style={{ marginBottom: 0, color: "#666" }}>
-            Tip: Select a submission below, then use “Assign Reviewers” or “Set
-            Decision”.
-          </p>
+      <div style={{ border: "1px solid #ddd", padding: 12, borderRadius: 8 }}>
+        <div style={{ marginBottom: 8 }}>
+          <b>Actions Panel</b>
         </div>
 
-        <div style={{ border: "1px solid #ddd", padding: 12 }}>
-          <h3 style={{ marginTop: 0 }}>Submissions</h3>
+        <div>
+          Reviewer emails (comma-separated):
+          <br />
+          <input
+            value={reviewerEmails}
+            onChange={(e) => setReviewerEmails(e.target.value)}
+            style={{ width: "100%" }}
+          />
+        </div>
 
-          {submissions.length === 0 ? (
+        <div style={{ marginTop: 8 }}>
+          Decision:
+          <br />
+          <select
+            value={decision}
+            onChange={(e) => setDecisionValue(e.target.value)}
+          >
+            <option value="ACCEPTED">ACCEPTED</option>
+            <option value="REJECTED">REJECTED</option>
+            <option value="REVISION_REQUESTED">REVISION_REQUESTED</option>
+          </select>
+        </div>
+
+        <div style={{ marginTop: 8 }}>
+          Decision note (optional):
+          <br />
+          <textarea
+            value={decisionNote}
+            onChange={(e) => setDecisionNote(e.target.value)}
+            rows={3}
+            style={{ width: "100%" }}
+          />
+        </div>
+
+        <div style={{ marginTop: 8, fontSize: 13, opacity: 0.8 }}>
+          Tip: select a submission below, then use “Assign reviewer” or “Set
+          decision”.
+        </div>
+      </div>
+
+      <div style={{ marginTop: 12 }}>
+        <b>Submissions</b>
+        <div style={{ marginTop: 8 }}>
+          {subs.length === 0 ? (
             <div>No submissions yet for this conference.</div>
           ) : (
-            <div style={{ overflowX: "auto" }}>
-              <table
+            subs.map((s) => (
+              <div
+                key={s._id || s.id}
                 style={{
-                  width: "100%",
-                  borderCollapse: "collapse",
-                  minWidth: 900,
+                  border: "1px solid #eee",
+                  padding: 10,
+                  borderRadius: 8,
+                  marginBottom: 10,
                 }}
               >
-                <thead>
-                  <tr>
-                    {["Title", "Status", "Authors", "Created", "Actions"].map(
-                      (h) => (
-                        <th
-                          key={h}
-                          style={{
-                            textAlign: "left",
-                            borderBottom: "1px solid #ccc",
-                            padding: 8,
-                          }}
-                        >
-                          {h}
-                        </th>
-                      ),
-                    )}
-                  </tr>
-                </thead>
-                <tbody>
-                  {submissions.map((s) => (
-                    <tr key={s._id}>
-                      <td
-                        style={{ padding: 8, borderBottom: "1px solid #eee" }}
-                      >
-                        <div style={{ fontWeight: 600 }}>{s.title}</div>
-                        <div style={{ fontSize: 12, color: "#666" }}>
-                          ID: {s._id}
-                        </div>
-                      </td>
+                <label style={{ display: "block" }}>
+                  <input
+                    type="radio"
+                    name="selectedSub"
+                    value={s._id || s.id}
+                    checked={selectedSubId === (s._id || s.id)}
+                    onChange={() => setSelectedSubId(s._id || s.id)}
+                  />{" "}
+                  <b>{s.title}</b>
+                </label>
 
-                      <td
-                        style={{ padding: 8, borderBottom: "1px solid #eee" }}
-                      >
-                        {s.status || "-"}
-                      </td>
+                <div style={{ fontSize: 13, marginTop: 4 }}>
+                  Status: <b>{s.status}</b> | Decision:{" "}
+                  <b>{s.decision || "NONE"}</b>
+                  <br />
+                  ID: {s._id || s.id}
+                </div>
 
-                      <td
-                        style={{ padding: 8, borderBottom: "1px solid #eee" }}
-                      >
-                        {(s.authors || [])
-                          .map((a) => a.fullName || a.name || a.email)
-                          .filter(Boolean)
-                          .join(", ") || "-"}
-                      </td>
-
-                      <td
-                        style={{ padding: 8, borderBottom: "1px solid #eee" }}
-                      >
-                        {s.createdAt
-                          ? new Date(s.createdAt).toLocaleString()
-                          : "-"}
-                      </td>
-
-                      <td
-                        style={{ padding: 8, borderBottom: "1px solid #eee" }}
-                      >
-                        <div
-                          style={{ display: "flex", gap: 8, flexWrap: "wrap" }}
-                        >
-                          <button
-                            onClick={() =>
-                              downloadPaper(s._id, `${s.title || "paper"}.pdf`)
-                            }
-                          >
-                            Download Paper
-                          </button>
-
-                          <button
-                            onClick={() => assignReviewers(s._id)}
-                            disabled={!canAdmin}
-                            title={!canAdmin ? "ADMIN/CHAIR only" : ""}
-                          >
-                            Assign Reviewers
-                          </button>
-
-                          <button
-                            onClick={() => applyDecision(s._id)}
-                            disabled={!canAdmin}
-                            title={!canAdmin ? "ADMIN/CHAIR only" : ""}
-                          >
-                            Set Decision
-                          </button>
-                        </div>
-
-                        {s.reviewers?.length ? (
-                          <div
-                            style={{
-                              marginTop: 6,
-                              fontSize: 12,
-                              color: "#666",
-                            }}
-                          >
-                            Reviewers: {s.reviewers.join(", ")}
-                          </div>
-                        ) : null}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                <div style={{ marginTop: 8 }}>
+                  <button
+                    disabled={!canAdmin}
+                    onClick={() => assignReviewers(s._id || s.id)}
+                  >
+                    Assign reviewer
+                  </button>{" "}
+                  <button
+                    disabled={!canAdmin}
+                    onClick={() => submitDecision(s._id || s.id, "ACCEPTED")}
+                  >
+                    Accept
+                  </button>{" "}
+                  <button
+                    disabled={!canAdmin}
+                    onClick={() => submitDecision(s._id || s.id, "REJECTED")}
+                  >
+                    Reject
+                  </button>{" "}
+                  <button
+                    disabled={!canAdmin}
+                    onClick={() =>
+                      submitDecision(s._id || s.id, "REVISION_REQUESTED")
+                    }
+                  >
+                    Revision
+                  </button>
+                </div>
+              </div>
+            ))
           )}
         </div>
       </div>
