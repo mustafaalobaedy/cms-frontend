@@ -3,8 +3,8 @@ import { apiFetch } from "../services/api";
 
 export default function MySubmissions() {
   const [items, setItems] = useState([]);
-  const [err, setErr] = useState("");
   const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState("");
 
   async function load() {
     setErr("");
@@ -23,31 +23,31 @@ export default function MySubmissions() {
     load();
   }, []);
 
-  async function downloadPaper(id) {
-    // Use browser download via a direct fetch+blob to include Authorization
+  async function download(submissionId) {
     try {
       const token = localStorage.getItem("token");
-      const res = await fetch(
-        `${import.meta.env.VITE_API_BASE_URL}/submissions/${id}/paper`,
-        {
-          headers: { Authorization: `Bearer ${token}` },
-        },
-      );
+      const url = `${import.meta.env.VITE_API_BASE_URL}/submissions/${submissionId}/paper`;
+
+      const res = await fetch(url, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
 
       if (!res.ok) {
-        const t = await res.text();
-        throw new Error(t || "Download failed");
+        const text = await res.text();
+        throw new Error(text || "Download failed");
       }
 
       const blob = await res.blob();
-      const url = window.URL.createObjectURL(blob);
+      const blobUrl = window.URL.createObjectURL(blob);
+
       const a = document.createElement("a");
-      a.href = url;
-      a.download = `paper-${id}.pdf`;
+      a.href = blobUrl;
+      a.download = `paper-${submissionId}.pdf`;
       document.body.appendChild(a);
       a.click();
       a.remove();
-      window.URL.revokeObjectURL(url);
+
+      window.URL.revokeObjectURL(blobUrl);
     } catch (e) {
       alert(e.message);
     }
@@ -68,7 +68,6 @@ export default function MySubmissions() {
 
       {loading && <p>Loading...</p>}
       {err && <p style={{ color: "red" }}>{err}</p>}
-
       {!loading && !err && items.length === 0 && <p>No submissions yet.</p>}
 
       {!loading && !err && items.length > 0 && (
@@ -95,13 +94,17 @@ export default function MySubmissions() {
                     Status: <b>{s.status}</b>
                   </div>
                 </div>
-                <button onClick={() => downloadPaper(s._id)}>
-                  Download PDF
-                </button>
+
+                <button onClick={() => download(s._id)}>Download PDF</button>
               </div>
 
-              <div style={{ marginTop: 10, fontSize: 12, opacity: 0.7 }}>
-                Submission ID: {s._id}
+              <div style={{ marginTop: 8, fontSize: 12, opacity: 0.75 }}>
+                Submitted:{" "}
+                {s.createdAt ? new Date(s.createdAt).toLocaleString() : "-"}
+              </div>
+
+              <div style={{ marginTop: 8, fontSize: 12, opacity: 0.7 }}>
+                ID: {s._id}
               </div>
             </div>
           ))}
