@@ -1,344 +1,314 @@
-// src/pages/Admin.jsx
 import React, { useEffect, useMemo, useState } from "react";
 import { apiFetch } from "../services/api";
+import { useAuth } from "../routes/AuthContext";
 
 export default function Admin() {
-  const [me, setMe] = useState(null);
+  const { user } = useAuth();
+  const roles = useMemo(() => user?.user?.roles || user?.roles || [], [user]);
+  const isAdmin = roles.includes("ADMIN");
+  const isChair = roles.includes("CHAIR");
+  const isTPC = roles.includes("TPC");
 
+  const [err, setErr] = useState("");
+  const [msg, setMsg] = useState("");
+
+  // Create user form
+  const [uEmail, setUEmail] = useState("reviewer1@icaici.com");
+  const [uName, setUName] = useState("Reviewer 1");
+  const [uPass, setUPass] = useState("Pass12345!");
+  const [uRoles, setURoles] = useState("REVIEWER"); // single role for now
+
+  // Conferences + submissions
   const [confs, setConfs] = useState([]);
-  const [confId, setConfId] = useState("");
-
+  const [conferenceId, setConferenceId] = useState("");
   const [subs, setSubs] = useState([]);
 
-  // Create user
-  const [uEmail, setUEmail] = useState("");
-  const [uName, setUName] = useState("");
-  const [uPass, setUPass] = useState("");
-  const [uRole, setURole] = useState("REVIEWER");
+  // Reviewer assignment
+  const [reviewerId, setReviewerId] = useState(""); // paste user id for now
 
-  // Actions panel
-  const [selectedSubId, setSelectedSubId] = useState("");
-  const [reviewerEmails, setReviewerEmails] = useState(
-    "reviewer1@email.com, reviewer2@email.com",
-  );
-  const [decision, setDecisionValue] = useState("ACCEPTED");
-  const [decisionNote, setDecisionNote] = useState("");
+  async function loadConfs() {
+    const data = await apiFetch("/conferences");
+    const items = data.items || [];
+    setConfs(items);
+    if (!conferenceId && items.length) setConferenceId(items[0]._id);
+  }
 
-  const [msg, setMsg] = useState("");
-  const [err, setErr] = useState("");
-
-  const roles = useMemo(() => {
-    const r = me?.roles || [];
-    return Array.isArray(r)
-      ? r
-      : String(r)
-          .split(",")
-          .map((x) => x.trim());
-  }, [me]);
-
-  const canAdmin =
-    roles.includes("ADMIN") || roles.includes("CHAIR") || roles.includes("TPC");
+  async function loadSubs(cid) {
+    if (!cid) return;
+    const data = await apiFetch(`/submissions/by-conference/${cid}`);
+    setSubs(data.items || []);
+  }
 
   useEffect(() => {
     (async () => {
       try {
-        const _me = await apiFetch("/me");
-        setMe(_me);
-
-        const list = await apiFetch("/conferences"); // your existing working endpoint
-        setConfs(list || []);
-
-        if ((list || []).length > 0) setConfId(list[0]._id || list[0].id || "");
+        await loadConfs();
       } catch (e) {
-        setErr(e.message || "Failed to load admin page");
+        setErr(e.message);
       }
     })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function loadSubmissions() {
+  useEffect(() => {
+    (async () => {
+      try {
+        if (conferenceId) await loadSubs(conferenceId);
+      } catch (e) {
+        setErr(e.message);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conferenceId]);
+
+  async function createUser(e) {
+    e.preventDefault();
     setErr("");
     setMsg("");
-    if (!confId) return setErr("Please select a conference");
-
     try {
-      // ✅ Correct endpoint (matches live)
-      const data = await apiFetch(`/admin/submissions/by-conference/${confId}`);
-      setSubs(Array.isArray(data) ? data : data?.items || []);
-      setMsg("Submissions loaded");
-    } catch (e) {
-      setErr(e.message || "Failed to load submissions");
-    }
-  }
+      if (!isAdmin) throw new Error("Only ADMIN can create users");
 
-  async function createUser() {
-    setErr("");
-    setMsg("");
-
-    if (!uEmail || !uName || !uPass)
-      return setErr("Email, Full Name, Password are required");
-
-    try {
-      const created = await apiFetch("/admin/users", {
+      const res = await apiFetch("/users", {
         method: "POST",
-        body: {
-          email: uEmail.trim(),
-          fullName: uName.trim(),
+        body: JSON.stringify({
+          email: uEmail,
+          fullName: uName,
           password: uPass,
-          role: uRole,
-        },
+          roles: [uRoles],
+        }),
       });
 
-      setMsg(`User created: ${created?.email || uEmail}`);
-      setUEmail("");
-      setUName("");
-      setUPass("");
+      setMsg(`User created: ${res.user.email} (id: ${res.user.id})`);
+      // helpful: auto-fill reviewerId
+      setReviewerId(res.user.id);
     } catch (e) {
-      setErr(e.message || "Failed to create user");
+      setErr(e.message);
     }
   }
 
-  async function assignReviewers(subId) {
+  async function assignReviewer(subId) {
     setErr("");
     setMsg("");
-    if (!canAdmin) return setErr("Only ADMIN/CHAIR/TPC can assign reviewers");
-
-    const emails = reviewerEmails
-      .split(",")
-      .map((x) => x.trim())
-      .filter(Boolean);
-
-    if (emails.length === 0) return setErr("Enter at least one reviewer email");
-
     try {
-      await apiFetch(`/admin/submissions/${subId}/assign-reviewers`, {
+      if (!reviewerId) throw new Error("Set reviewerId first (user id)");
+
+      await apiFetch(`/submissions/${subId}/assign-reviewers`, {
         method: "POST",
-        body: { reviewerEmails: emails },
+        body: JSON.stringify({ reviewerIds: [reviewerId] }),
       });
 
-      setMsg("Reviewers assigned (status should become UNDER_REVIEW)");
-      await loadSubmissions();
+      setMsg("Reviewer assigned. Status moved to UNDER_REVIEW.");
+      await loadSubs(conferenceId);
     } catch (e) {
-      setErr(e.message || "Failed to assign reviewers");
+      setErr(e.message);
     }
   }
 
-  async function submitDecision(subId, decisionValue) {
+  async function decide(subId, decision) {
     setErr("");
     setMsg("");
-    if (!canAdmin) return setErr("Only ADMIN/CHAIR/TPC can set decision");
-
     try {
-      await apiFetch(`/admin/submissions/${subId}/decision`, {
+      if (!(isAdmin || isChair)) throw new Error("Only ADMIN/CHAIR can decide");
+
+      await apiFetch(`/submissions/${subId}/decision`, {
         method: "POST",
-        body: {
-          decision: decisionValue,
-          note: decisionNote || "",
-        },
+        body: JSON.stringify({ decision, note: `Decision: ${decision}` }),
       });
 
-      setMsg(`Decision set: ${decisionValue}`);
-      await loadSubmissions();
+      setMsg(`Decision saved: ${decision}`);
+      await loadSubs(conferenceId);
     } catch (e) {
-      setErr(e.message || "Failed to set decision");
+      setErr(e.message);
     }
   }
 
   return (
-    <div style={{ maxWidth: 980 }}>
+    <div style={{ maxWidth: 1000 }}>
       <h2>Admin</h2>
 
-      <div style={{ marginBottom: 12 }}>
-        <div>
-          Conference:{" "}
-          <select value={confId} onChange={(e) => setConfId(e.target.value)}>
-            {confs.map((c) => (
-              <option key={c._id || c.id} value={c._id || c.id}>
-                {c.shortName ? `${c.shortName} — ${c.name}` : c.name}
-              </option>
-            ))}
-          </select>{" "}
-          <button onClick={loadSubmissions}>Refresh</button>
-        </div>
+      {err && <p style={{ color: "red" }}>{err}</p>}
+      {msg && <p style={{ color: "green" }}>{msg}</p>}
 
-        {!canAdmin && (
-          <div style={{ marginTop: 8, padding: 8, border: "1px solid #ddd" }}>
-            You are logged in, but your role is not ADMIN/CHAIR/TPC. You can
-            view only.
-          </div>
-        )}
+      {/* Create user */}
+      <div
+        style={{
+          border: "1px solid #ddd",
+          borderRadius: 10,
+          padding: 12,
+          marginBottom: 16,
+        }}
+      >
+        <h3 style={{ marginTop: 0 }}>Create User (ADMIN)</h3>
 
-        {err && (
-          <div style={{ color: "crimson", marginTop: 8 }}>Error: {err}</div>
-        )}
-        {msg && <div style={{ color: "green", marginTop: 8 }}>{msg}</div>}
-      </div>
+        {!isAdmin ? (
+          <p style={{ fontSize: 12, opacity: 0.7 }}>
+            You are not ADMIN. This section is read-only.
+          </p>
+        ) : (
+          <form onSubmit={createUser} style={{ display: "grid", gap: 10 }}>
+            <label>
+              Email
+              <input
+                value={uEmail}
+                onChange={(e) => setUEmail(e.target.value)}
+                style={{ width: "100%", padding: 8, marginTop: 6 }}
+              />
+            </label>
 
-      <hr />
+            <label>
+              Full Name
+              <input
+                value={uName}
+                onChange={(e) => setUName(e.target.value)}
+                style={{ width: "100%", padding: 8, marginTop: 6 }}
+              />
+            </label>
 
-      <h3>Create User (ADMIN)</h3>
-      <div style={{ border: "1px solid #ddd", padding: 12, borderRadius: 8 }}>
-        <div>
-          Email
-          <br />
-          <input
-            value={uEmail}
-            onChange={(e) => setUEmail(e.target.value)}
-            style={{ width: "100%" }}
-          />
-        </div>
-        <div style={{ marginTop: 8 }}>
-          Full Name
-          <br />
-          <input
-            value={uName}
-            onChange={(e) => setUName(e.target.value)}
-            style={{ width: "100%" }}
-          />
-        </div>
-        <div style={{ marginTop: 8 }}>
-          Password
-          <br />
-          <input
-            value={uPass}
-            onChange={(e) => setUPass(e.target.value)}
-            style={{ width: "100%" }}
-          />
-        </div>
-        <div style={{ marginTop: 8 }}>
-          Role
-          <br />
-          <select
-            value={uRole}
-            onChange={(e) => setURole(e.target.value)}
-            style={{ width: "100%" }}
-          >
-            <option value="REVIEWER">REVIEWER</option>
-            <option value="TPC">TPC</option>
-            <option value="CHAIR">CHAIR</option>
-            <option value="ADMIN">ADMIN</option>
-            <option value="AUTHOR">AUTHOR</option>
-          </select>
-        </div>
-        <div style={{ marginTop: 10 }}>
-          <button onClick={createUser}>Create User</button>
-        </div>
-      </div>
+            <label>
+              Password
+              <input
+                value={uPass}
+                onChange={(e) => setUPass(e.target.value)}
+                style={{ width: "100%", padding: 8, marginTop: 6 }}
+              />
+            </label>
 
-      <hr />
-
-      <h3>Submissions by Conference (TPC/CHAIR/ADMIN)</h3>
-
-      <div style={{ border: "1px solid #ddd", padding: 12, borderRadius: 8 }}>
-        <div style={{ marginBottom: 8 }}>
-          <b>Actions Panel</b>
-        </div>
-
-        <div>
-          Reviewer emails (comma-separated):
-          <br />
-          <input
-            value={reviewerEmails}
-            onChange={(e) => setReviewerEmails(e.target.value)}
-            style={{ width: "100%" }}
-          />
-        </div>
-
-        <div style={{ marginTop: 8 }}>
-          Decision:
-          <br />
-          <select
-            value={decision}
-            onChange={(e) => setDecisionValue(e.target.value)}
-          >
-            <option value="ACCEPTED">ACCEPTED</option>
-            <option value="REJECTED">REJECTED</option>
-            <option value="REVISION_REQUESTED">REVISION_REQUESTED</option>
-          </select>
-        </div>
-
-        <div style={{ marginTop: 8 }}>
-          Decision note (optional):
-          <br />
-          <textarea
-            value={decisionNote}
-            onChange={(e) => setDecisionNote(e.target.value)}
-            rows={3}
-            style={{ width: "100%" }}
-          />
-        </div>
-
-        <div style={{ marginTop: 8, fontSize: 13, opacity: 0.8 }}>
-          Tip: select a submission below, then use “Assign reviewer” or “Set
-          decision”.
-        </div>
-      </div>
-
-      <div style={{ marginTop: 12 }}>
-        <b>Submissions</b>
-        <div style={{ marginTop: 8 }}>
-          {subs.length === 0 ? (
-            <div>No submissions yet for this conference.</div>
-          ) : (
-            subs.map((s) => (
-              <div
-                key={s._id || s.id}
-                style={{
-                  border: "1px solid #eee",
-                  padding: 10,
-                  borderRadius: 8,
-                  marginBottom: 10,
-                }}
+            <label>
+              Role
+              <select
+                value={uRoles}
+                onChange={(e) => setURoles(e.target.value)}
+                style={{ width: "100%", padding: 8, marginTop: 6 }}
               >
-                <label style={{ display: "block" }}>
-                  <input
-                    type="radio"
-                    name="selectedSub"
-                    value={s._id || s.id}
-                    checked={selectedSubId === (s._id || s.id)}
-                    onChange={() => setSelectedSubId(s._id || s.id)}
-                  />{" "}
-                  <b>{s.title}</b>
-                </label>
+                <option value="TPC">TPC</option>
+                <option value="REVIEWER">REVIEWER</option>
+                <option value="CHAIR">CHAIR</option>
+                <option value="AUTHOR">AUTHOR</option>
+              </select>
+            </label>
 
-                <div style={{ fontSize: 13, marginTop: 4 }}>
-                  Status: <b>{s.status}</b> | Decision:{" "}
-                  <b>{s.decision || "NONE"}</b>
-                  <br />
-                  ID: {s._id || s.id}
-                </div>
+            <button type="submit" style={{ width: 170 }}>
+              Create User
+            </button>
+          </form>
+        )}
+      </div>
 
-                <div style={{ marginTop: 8 }}>
-                  <button
-                    disabled={!canAdmin}
-                    onClick={() => assignReviewers(s._id || s.id)}
+      {/* Submission management */}
+      <div style={{ border: "1px solid #ddd", borderRadius: 10, padding: 12 }}>
+        <h3 style={{ marginTop: 0 }}>
+          Submissions by Conference (TPC/CHAIR/ADMIN)
+        </h3>
+
+        {!(isAdmin || isChair || isTPC) ? (
+          <p style={{ fontSize: 12, opacity: 0.7 }}>
+            You need ADMIN/CHAIR/TPC role.
+          </p>
+        ) : (
+          <>
+            <div
+              style={{
+                display: "flex",
+                gap: 10,
+                alignItems: "center",
+                flexWrap: "wrap",
+              }}
+            >
+              <select
+                value={conferenceId}
+                onChange={(e) => setConferenceId(e.target.value)}
+                style={{ padding: 8, minWidth: 320 }}
+              >
+                {confs.map((c) => (
+                  <option key={c._id} value={c._id}>
+                    {c.code} — {c.name}
+                  </option>
+                ))}
+              </select>
+
+              <button onClick={() => loadSubs(conferenceId)}>
+                Refresh submissions
+              </button>
+            </div>
+
+            <div style={{ marginTop: 12 }}>
+              <label style={{ fontSize: 12, opacity: 0.7 }}>
+                Reviewer/User ID to assign (for now paste the created user id)
+              </label>
+              <input
+                value={reviewerId}
+                onChange={(e) => setReviewerId(e.target.value)}
+                placeholder="e.g. 65f... (user id)"
+                style={{ width: "100%", padding: 8, marginTop: 6 }}
+              />
+            </div>
+
+            <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
+              {subs.length === 0 ? (
+                <p>No submissions found.</p>
+              ) : (
+                subs.map((s) => (
+                  <div
+                    key={s._id}
+                    style={{
+                      border: "1px solid #eee",
+                      borderRadius: 10,
+                      padding: 12,
+                    }}
                   >
-                    Assign reviewer
-                  </button>{" "}
-                  <button
-                    disabled={!canAdmin}
-                    onClick={() => submitDecision(s._id || s.id, "ACCEPTED")}
-                  >
-                    Accept
-                  </button>{" "}
-                  <button
-                    disabled={!canAdmin}
-                    onClick={() => submitDecision(s._id || s.id, "REJECTED")}
-                  >
-                    Reject
-                  </button>{" "}
-                  <button
-                    disabled={!canAdmin}
-                    onClick={() =>
-                      submitDecision(s._id || s.id, "REVISION_REQUESTED")
-                    }
-                  >
-                    Revision
-                  </button>
-                </div>
-              </div>
-            ))
-          )}
-        </div>
+                    <div
+                      style={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        gap: 10,
+                      }}
+                    >
+                      <div>
+                        <div style={{ fontWeight: 700 }}>{s.title}</div>
+                        <div style={{ fontSize: 12, opacity: 0.75 }}>
+                          Status: <b>{s.status}</b> | Decision:{" "}
+                          <b>{s.decision || "NONE"}</b>
+                        </div>
+                        <div
+                          style={{ fontSize: 12, opacity: 0.7, marginTop: 4 }}
+                        >
+                          ID: {s._id}
+                        </div>
+                      </div>
+
+                      <div
+                        style={{
+                          display: "flex",
+                          gap: 8,
+                          flexWrap: "wrap",
+                          alignItems: "center",
+                        }}
+                      >
+                        <button onClick={() => assignReviewer(s._id)}>
+                          Assign reviewer
+                        </button>
+
+                        {(isAdmin || isChair) && (
+                          <>
+                            <button onClick={() => decide(s._id, "ACCEPT")}>
+                              Accept
+                            </button>
+                            <button onClick={() => decide(s._id, "REJECT")}>
+                              Reject
+                            </button>
+                            <button onClick={() => decide(s._id, "REVISION")}>
+                              Revision
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
